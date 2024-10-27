@@ -1,1 +1,1 @@
-The goal is to render bevy's output as a texture and load it in egui, without using bevy_egui
+The goal is to render bevy's output as a texture and load it in egui, without using bevy_egui. Still learning how this works
