@@ -1,5 +1,7 @@
+use async_channel::{Sender, Receiver};
+
 use eframe::{egui, App as EframeApp};
-use bevy::{app::PanicHandlerPlugin, core_pipeline::CorePipelinePlugin, pbr::GpuMeshPreprocessPlugin, prelude::*, render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::{Extent3d, PipelineCache, TextureDescriptor, TextureFormat, TextureUsages}, settings::{RenderCreation, WgpuSettings}, RenderApp, RenderPlugin}, scene::ron::de};
+use bevy::{app::PanicHandlerPlugin, core_pipeline::CorePipelinePlugin, pbr::GpuMeshPreprocessPlugin, prelude::*, render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::{Extent3d, PipelineCache, TextureDescriptor, TextureFormat, TextureUsages}, settings::{RenderCreation, WgpuSettings}, Extract, RenderApp, RenderPlugin}, scene::ron::de};
 
 struct BevyApp {
     texture: Option<egui::TextureHandle>,
@@ -14,6 +16,10 @@ impl BevyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut bevy_app = App::new();
         println!("BevyApp created");
+
+        // Create a channel to send messages from the Bevy app to the render app
+        let (app_to_render_sender, app_to_render_receiver) = async_channel::unbounded();
+
         // Add only essential plugins for rendering
         bevy_app
             .add_plugins((
@@ -38,10 +44,15 @@ impl BevyApp {
                 bevy::render::texture::ImagePlugin::default(),
                 CorePipelinePlugin::default(),
             ));
-
+        println!("Plugins added");
         // Initialize render app channels
-        // let render_app = bevy_app.sub_app_mut(RenderApp);
-        // render_app.insert_resource(bevy::render::pipelined_rendering::RenderAppChannels::new(app_to_render_sender, render_to_app_receiver));
+        bevy_app.insert_sub_app(
+            RenderApp, 
+            SubApp::new(),
+        );
+        let render_app = bevy_app.sub_app_mut(RenderApp);
+        println!("Sub app created");
+        render_app.insert_resource(bevy::render::pipelined_rendering::RenderAppChannels::new(app_to_render_sender, app_to_render_receiver));
         
         let render_target = {
             bevy_app.world_mut().insert_resource(Assets::<Image>::default());
