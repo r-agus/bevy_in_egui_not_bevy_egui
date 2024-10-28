@@ -25,6 +25,14 @@ impl BevyApp {
         let (app_to_render_sender, _app_to_render_receiver) = async_channel::unbounded();
         let (_render_to_app_sender, render_to_app_receiver) = async_channel::unbounded();
 
+        let render_creation = RenderCreation::Automatic(WgpuSettings{
+            backends: Some(bevy::render::settings::Backends::all()),
+            power_preference: bevy::render::settings::PowerPreference::HighPerformance,
+            ..default()
+        });
+
+        println!("RenderCreation created");
+
         // Add only essential plugins for rendering
         bevy_app
             .add_plugins((
@@ -37,18 +45,12 @@ impl BevyApp {
                 },
                 bevy::render::pipelined_rendering::PipelinedRenderingPlugin,
                 RenderPlugin {
-                    render_creation: RenderCreation::Automatic(WgpuSettings {
-                        backends: Some(Backends::VULKAN),
-                        power_preference: bevy::render::settings::PowerPreference::HighPerformance,
-                        features: Default::default(),
-                        limits: Default::default(),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
+                    render_creation, //: RenderCreation::Manual((render_device, render_queue, render_adapter_info, render_adapter)),  // We need to provide RenderDevice, RenderQueue, RenderAdapterInfo, RenderAdapter
+                    synchronous_pipeline_compilation: true,
                 },
                 bevy::render::texture::ImagePlugin::default(),
-                bevy::pbr::PbrPlugin::default(),
                 CorePipelinePlugin::default(),
+                bevy::pbr::PbrPlugin::default(),
             ));
         println!("Plugins added");
 
