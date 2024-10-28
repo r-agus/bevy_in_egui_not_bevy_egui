@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = "0.14.2"
-wgpu = "22.1.0"
+bevy = {version = "0.14.2", features = ["bevy_asset", "bevy_render"]}
+wgpu = "0.20.1"
 winit = "0.30.5"
 egui = "0.29.1"
 egui-winit = "0.29.1"
 egui-wgpu = "0.29.1"
 eframe = "0.29.1"
 async-channel = "2.3.1"
+futures = "0.3.31"

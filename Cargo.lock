@@ -1882,17 +1882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "d3d12"
-version = "22.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdbd1f579714e3c809ebd822c81ef148b1ceaeb3d535352afc73fd0c4c6a0017"
-dependencies = [
- "bitflags 2.6.0",
- "libloading 0.8.5",
- "winapi",
-]
-
-[[package]]
 name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2308,10 +2297,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
+name = "futures-channel"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dff15bf788c671c1934e366d07e30c1814a8ef514e1af724a602e8a2fbe1b10"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
+
+[[package]]
+name = "futures-executor"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e28d1d997f585e54aebc3f97d39e72338912123a67330d723fdbb564d646c9f"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
 
 [[package]]
 name = "futures-io"
@@ -2361,6 +2386,7 @@ version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
@@ -4291,7 +4317,8 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
- "wgpu 22.1.0",
+ "futures",
+ "wgpu 0.20.1",
  "winit",
 ]
 
@@ -4847,7 +4874,6 @@ dependencies = [
  "document-features",
  "js-sys",
  "log",
- "naga 22.1.0",
  "parking_lot",
  "profiling",
  "raw-window-handle",
@@ -4927,7 +4953,7 @@ dependencies = [
  "block",
  "cfg_aliases 0.1.1",
  "core-graphics-types",
- "d3d12 0.20.0",
+ "d3d12",
  "glow 0.13.1",
  "glutin_wgl_sys 0.5.0",
  "gpu-alloc",
@@ -4967,12 +4993,9 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash 0.38.0+1.3.281",
- "bit-set 0.6.0",
  "bitflags 2.6.0",
- "block",
  "cfg_aliases 0.1.1",
  "core-graphics-types",
- "d3d12 22.0.0",
  "glow 0.13.1",
  "glutin_wgl_sys 0.6.0",
  "gpu-alloc",
@@ -4991,7 +5014,6 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "profiling",
- "range-alloc",
  "raw-window-handle",
  "renderdoc-sys",
  "rustc-hash",

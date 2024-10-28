@@ -1,5 +1,6 @@
 use eframe::{egui, App as EframeApp};
-use bevy::{core_pipeline::{core_3d::Transmissive3d, CorePipelinePlugin}, prelude::*, render::{render_phase::DrawFunctions, render_resource::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages}, settings::{Backends, RenderCreation, WgpuSettings}, view::ViewTarget, Extract, RenderApp, RenderPlugin}};
+use bevy::{core_pipeline::{core_3d::Transmissive3d, CorePipelinePlugin}, prelude::*, render::{render_phase::DrawFunctions, render_resource::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages}, settings::RenderCreation, view::ViewTarget, Extract, RenderApp, RenderPlugin}};
+use futures::executor;
 
 struct BevyApp {
     texture: Option<egui::TextureHandle>,
@@ -10,10 +11,40 @@ struct BevyApp {
 #[derive(Resource, Clone)]
 struct RenderTargetResource(Handle<Image>);
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 struct ExtractedTextureData {
     data: Vec<u8>,
     size: Extent3d,
+}
+
+async fn create_device() -> (bevy::render::renderer::RenderDevice, bevy::render::renderer::RenderQueue, bevy::render::renderer::RenderAdapterInfo, bevy::render::renderer::RenderAdapter, bevy::render::renderer::RenderInstance) {
+    let instance = wgpu::Instance::default();
+    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    })
+    .await
+    .expect("Failed to find an appropriate adapter");
+
+    let (device, queue) = adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+        },
+        None,
+    )
+    .await
+    .expect("Failed to create device");
+
+    (
+        bevy::render::renderer::RenderDevice::from(device),
+        bevy::render::renderer::RenderQueue(std::sync::Arc::new(bevy::render::renderer::WgpuWrapper::new(queue))),
+        bevy::render::renderer::RenderAdapterInfo(bevy::render::renderer::WgpuWrapper::new(std::sync::Arc::new(adapter.get_info()).as_ref().clone())),
+        bevy::render::renderer::RenderAdapter(std::sync::Arc::new(bevy::render::renderer::WgpuWrapper::new(adapter))),
+        bevy::render::renderer::RenderInstance(std::sync::Arc::new(bevy::render::renderer::WgpuWrapper::new(instance))),
+    )
 }
 
 impl BevyApp {
@@ -25,12 +56,14 @@ impl BevyApp {
         let (app_to_render_sender, _app_to_render_receiver) = async_channel::unbounded();
         let (_render_to_app_sender, render_to_app_receiver) = async_channel::unbounded();
 
-        let render_creation = RenderCreation::Automatic(WgpuSettings{
-            backends: Some(bevy::render::settings::Backends::all()),
-            power_preference: bevy::render::settings::PowerPreference::HighPerformance,
-            ..default()
-        });
+        // let render_creation = RenderCreation::Automatic(WgpuSettings{
+        //     backends: Some(bevy::render::settings::Backends::all()),
+        //     power_preference: bevy::render::settings::PowerPreference::HighPerformance,
+        //     ..default()
+        // });
 
+        let (render_device, render_queue, adapter_info, adapter, instance) = executor::block_on(create_device());
+        let render_creation = RenderCreation::manual(render_device, render_queue, adapter_info, adapter, instance);
         println!("RenderCreation created");
 
         // Add only essential plugins for rendering
@@ -59,12 +92,13 @@ impl BevyApp {
             RenderApp, 
             SubApp::new(),
         );
-        let render_app = bevy_app.sub_app_mut(RenderApp).add_systems(ExtractSchedule, extract_texture);
+        let render_app = bevy_app.sub_app_mut(RenderApp)
+            .add_systems(ExtractSchedule, extract_texture);
         render_app.insert_resource(DrawFunctions::<Transmissive3d>::default());
         println!("Sub app created");
 
         render_app.insert_resource(bevy::render::pipelined_rendering::RenderAppChannels::new(app_to_render_sender, render_to_app_receiver));
-
+        
         let render_target = {
             bevy_app.world_mut().insert_resource(Assets::<Image>::default());
             let mut images = bevy_app.world_mut().get_resource_mut::<Assets<Image>>().unwrap();
@@ -83,7 +117,6 @@ impl BevyApp {
                     format: bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
                     usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
                     view_formats: &[], // Change this from &[TextureFormat::Rgba8UnormSrgb] 
-                    
                 },
                 ..default()
             };
@@ -92,13 +125,12 @@ impl BevyApp {
 
             images.add(texture)
         };
-
+        
         bevy_app.insert_resource(RenderTargetResource(render_target.clone()));
         
         bevy_app.add_systems(Startup, setup);
 
         println!("Systems added");
-
         Self { 
             texture: None,
             bevy_app,
@@ -110,52 +142,62 @@ impl BevyApp {
 impl EframeApp for BevyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) { 
         self.bevy_app.update();
+        
+        let extracted_texture_data = self.bevy_app.world_mut().get_resource::<ExtractedTextureData>().cloned();
         let images = self.bevy_app.world_mut().get_resource_mut::<Assets<Image>>().unwrap();
+        
+        if let Some(image) = images.get(&self.render_target) {  // Not sure if necessary
+            if let Some(extracted_texture_data) = extracted_texture_data {  // Actual data is here
+                // Ensure the pixel data is available and has the correct length
+                if image.data.len() == (extracted_texture_data.size.width * extracted_texture_data.size.height * 4) as usize {
+                    let pixels = extracted_texture_data
+                        .data
+                        .chunks_exact(4)
+                        .flat_map(|rgba| rgba[..3].iter().copied())
+                        .collect::<Vec<_>>();
 
-        if let Some(image) = images.get(&self.render_target) {
-            let size = image.texture_descriptor.size;
+                    let color_image = egui::ColorImage::from_rgb(
+                        [extracted_texture_data.size.width as usize, extracted_texture_data.size.height as usize],
+                        &pixels
+                    );
+                    if let Some(texture) = &mut self.texture {
+                        texture.set(color_image, egui::TextureOptions::default());
+                    } else {
+                        self.texture = Some(ctx.load_texture(
+                            "bevy_texture",
+                            color_image,
+                            Default::default()
+                        ));
+                    }
+                } 
+            } else{
+                println!("No extracted texture data");
+            } 
 
             // Ensure the pixel data is available and has the correct length
-            if image.data.len() == (size.width * size.height * 4) as usize {
-                // Convert the pixel data from Bevy's Image (which is in RGBA format)
-                // to an Egui ColorImage (which expects RGB format)
-                let pixels = image
-                    .data
-                    .chunks_exact(4)
-                    .flat_map(|rgba| rgba[..3].iter().copied())
-                    .collect::<Vec<_>>();
+            // if image.data.len() == (size.width * size.height * 4) as usize {
+            //     // Convert the pixel data from Bevy's Image (which is in RGBA format)
+            //     // to an Egui ColorImage (which expects RGB format)
+            //     let pixels = image
+            //         .data
+            //         .chunks_exact(4)
+            //         .flat_map(|rgba| rgba[..3].iter().copied())
+            //         .collect::<Vec<_>>();
 
-                let color_image = egui::ColorImage::from_rgb(
-                    [size.width as usize, size.height as usize],
-                    &pixels
-                );
-
-                if let Some(texture) = &mut self.texture {
-                    texture.set(color_image, egui::TextureOptions::default());
-                } else {
-                    self.texture = Some(ctx.load_texture(
-                        "bevy_texture",
-                        color_image,
-                        Default::default()
-                    ));
-                }
-                // Check if the resulting pixel data has the correct length (if not, from_rgb will panic)
-                // if pixels.len() == (size.width * size.height * 3) as usize {
-                //     let color_image = egui::ColorImage::from_rgb([size.width as usize, size.height as usize], &pixels);
-
-                //     if let Some(texture) = &mut self.texture {
-                //         // Update the existing texture
-                //         texture.set(color_image, egui::TextureOptions::default());
-                //     } else {
-                //         // Create a new Egui texture
-                //         self.texture = Some(ctx.load_texture("bevy_texture", color_image, Default::default()));
-                //     }
-                // }
-            } else {
-                println!("Invalid image data length: {}", image.data.len());
-            }
-        } else {
-            println!("Image not found");
+            //     let color_image = egui::ColorImage::from_rgb(
+            //         [size.width as usize, size.height as usize],
+            //         &pixels
+            //     );
+            //     if let Some(texture) = &mut self.texture {
+            //         texture.set(color_image, egui::TextureOptions::default());
+            //     } else {
+            //         self.texture = Some(ctx.load_texture(
+            //             "bevy_texture",
+            //             color_image,
+            //             Default::default()
+            //         ));
+            //     }
+            // }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -238,7 +280,7 @@ fn setup(
 
     // Check if RenderTargetResource is already inserted, if not insert it, otherwise update it
     *render_target = RenderTargetResource(render_target_texture); // Modify the resource directly
-
+    // render_target.0 = render_target_texture; // Modify the resource directly
     println!("Setup done");
 }
 
