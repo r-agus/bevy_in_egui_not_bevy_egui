@@ -1,5 +1,5 @@
 use eframe::{egui, App as EframeApp};
-use bevy::{app::PanicHandlerPlugin, core_pipeline::CorePipelinePlugin, pbr::GpuMeshPreprocessPlugin, prelude::*, render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages}, RenderPlugin}};
+use bevy::{app::PanicHandlerPlugin, core_pipeline::CorePipelinePlugin, pbr::GpuMeshPreprocessPlugin, prelude::*, render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::{Extent3d, PipelineCache, TextureDescriptor, TextureFormat, TextureUsages}, settings::{RenderCreation, WgpuSettings}, RenderApp, RenderPlugin}, scene::ron::de};
 
 struct BevyApp {
     texture: Option<egui::TextureHandle>,
@@ -14,34 +14,35 @@ impl BevyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut bevy_app = App::new();
         println!("BevyApp created");
-        // bevy_app.add_plugins(MinimalPlugins);       // Do not load DefaultPlugins!!! It will cause a panic
-        // bevy_app.add_plugins(bevy::log::LogPlugin::default());
-        // bevy_app.add_plugins(bevy::asset::AssetPlugin::default());
-        // bevy_app.add_plugins(bevy::render::RenderPlugin::default());
-        // println!("RenderPlugin added");
-        // bevy_app.add_plugins(bevy::render::texture::ImagePlugin::default());
-        // // bevy_app.add_plugins(bevy::core_pipeline::CorePipelinePlugin);
-        // bevy_app.add_plugins(bevy::core_pipeline::core_3d::Core3dPlugin);
-        // bevy_app.add_plugins(bevy::core_pipeline::core_2d::Core2dPlugin);  // This is what makes DefaultPlugins panic!
-        // println!("CorePipelinePlugin added");
-        // bevy_app.add_plugins(bevy::pbr::PbrPlugin::default());
-        // bevy_app.add_plugins(bevy::ui::UiPlugin::default());
-        // bevy_app.add_plugins(bevy::input::InputPlugin::default());
-        // bevy_app.add_plugins(bevy::sprite::SpritePlugin::default());
-        // bevy_app.add_plugins(bevy::text::TextPlugin::default());
-        // bevy_app.add_plugins(bevy::scene::ScenePlugin::default());
-        // bevy_app.add_plugins(bevy::a11y::AccessibilityPlugin);
-        // bevy_app.add_plugins(HierarchyPlugin);
-        // bevy_app.add_plugins(bevy::diagnostic::DiagnosticsPlugin);
-        // bevy_app.add_plugins(PipelinedRenderingPlugin::default());
-        // bevy_app.add_plugins(bevy::window::WindowPlugin::default());
-        bevy_app.add_plugins(CorePipelinePlugin);
-        println!("CorePipelinePlugin added");
-        bevy_app.add_plugins(DefaultPlugins);
-        println!("DefaultPlugins added");
-        bevy_app.add_systems(Startup, setup);
-        println!("Systems added");
+        // Add only essential plugins for rendering
+        bevy_app
+            .add_plugins((
+                MinimalPlugins,
+                AssetPlugin::default(),
+                WindowPlugin {
+                    primary_window: None, // No actual window
+                    exit_condition: bevy::window::ExitCondition::OnAllClosed,
+                    close_when_requested: true,
+                },
+                bevy::render::pipelined_rendering::PipelinedRenderingPlugin,
+                RenderPlugin {
+                    render_creation: RenderCreation::Automatic(WgpuSettings {
+                        backends: None,
+                        power_preference: bevy::render::settings::PowerPreference::HighPerformance,
+                        features: Default::default(),
+                        limits: Default::default(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                bevy::render::texture::ImagePlugin::default(),
+                CorePipelinePlugin::default(),
+            ));
 
+        // Initialize render app channels
+        // let render_app = bevy_app.sub_app_mut(RenderApp);
+        // render_app.insert_resource(bevy::render::pipelined_rendering::RenderAppChannels::new(app_to_render_sender, render_to_app_receiver));
+        
         let render_target = {
             bevy_app.world_mut().insert_resource(Assets::<Image>::default());
             let mut images = bevy_app.world_mut().get_resource_mut::<Assets<Image>>().unwrap();
@@ -50,22 +51,29 @@ impl BevyApp {
                 height: 512,
                 depth_or_array_layers: 1,
             };
-            let texture = Image {
+            let mut texture = Image {
                 texture_descriptor: TextureDescriptor {
                     size,
-                    label: None,
+                    label: Some("render target"),
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: bevy::render::render_resource::TextureDimension::D2,
                     format: bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[TextureFormat::Rgba8UnormSrgb],
+                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
+                    view_formats: &[], // Change this from &[TextureFormat::Rgba8UnormSrgb] 
                     
                 },
                 ..default()
             };
+
+            texture.data = vec![0; (size.width * size.height * 4) as usize];
+
             images.add(texture)
         };
+
+        bevy_app.add_systems(Startup, setup);
+        println!("Systems added");
+
         Self { 
             texture: None,
             bevy_app,
@@ -83,7 +91,7 @@ impl EframeApp for BevyApp {
             let size = image.texture_descriptor.size;
 
             // Ensure the pixel data is available and has the correct length
-            if !image.data.is_empty() && image.data.len() == (size.width * size.height * 4) as usize {
+            if image.data.len() == (size.width * size.height * 4) as usize {
                 // Convert the pixel data from Bevy's Image (which is in RGBA format)
                 // to an Egui ColorImage (which expects RGB format)
                 let pixels = image
@@ -92,18 +100,32 @@ impl EframeApp for BevyApp {
                     .flat_map(|rgba| rgba[..3].iter().copied())
                     .collect::<Vec<_>>();
 
-                // Check if the resulting pixel data has the correct length
-                if pixels.len() == (size.width * size.height * 3) as usize {
-                    let color_image = egui::ColorImage::from_rgb([size.width as usize, size.height as usize], &pixels);
+                let color_image = egui::ColorImage::from_rgb(
+                    [size.width as usize, size.height as usize],
+                    &pixels
+                );
 
-                    if let Some(texture) = &mut self.texture {
-                        // Update the existing texture
-                        texture.set(color_image, egui::TextureOptions::default());
-                    } else {
-                        // Create a new Egui texture
-                        self.texture = Some(ctx.load_texture("bevy_texture", color_image, Default::default()));
-                    }
+                if let Some(texture) = &mut self.texture {
+                    texture.set(color_image, egui::TextureOptions::default());
+                } else {
+                    self.texture = Some(ctx.load_texture(
+                        "bevy_texture",
+                        color_image,
+                        Default::default()
+                    ));
                 }
+                // Check if the resulting pixel data has the correct length (if not, from_rgb will panic)
+                // if pixels.len() == (size.width * size.height * 3) as usize {
+                //     let color_image = egui::ColorImage::from_rgb([size.width as usize, size.height as usize], &pixels);
+
+                //     if let Some(texture) = &mut self.texture {
+                //         // Update the existing texture
+                //         texture.set(color_image, egui::TextureOptions::default());
+                //     } else {
+                //         // Create a new Egui texture
+                //         self.texture = Some(ctx.load_texture("bevy_texture", color_image, Default::default()));
+                //     }
+                // }
             } else {
                 println!("Invalid image data length: {}", image.data.len());
 
