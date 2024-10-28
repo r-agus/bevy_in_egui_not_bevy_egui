@@ -1,7 +1,5 @@
-use async_channel::{Sender, Receiver};
-
 use eframe::{egui, App as EframeApp};
-use bevy::{app::PanicHandlerPlugin, core_pipeline::CorePipelinePlugin, pbr::GpuMeshPreprocessPlugin, prelude::*, render::{pipelined_rendering::PipelinedRenderingPlugin, render_resource::{Extent3d, PipelineCache, TextureDescriptor, TextureFormat, TextureUsages}, settings::{RenderCreation, WgpuSettings}, Extract, RenderApp, RenderPlugin}, scene::ron::de};
+use bevy::{core_pipeline::{core_3d::Transmissive3d, CorePipelinePlugin}, prelude::*, render::{render_phase::DrawFunctions, render_resource::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages}, settings::{Backends, RenderCreation, WgpuSettings}, view::ViewTarget, Extract, RenderApp, RenderPlugin}};
 
 struct BevyApp {
     texture: Option<egui::TextureHandle>,
@@ -9,8 +7,14 @@ struct BevyApp {
     render_target: Handle<Image>,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 struct RenderTargetResource(Handle<Image>);
+
+#[derive(Resource)]
+struct ExtractedTextureData {
+    data: Vec<u8>,
+    size: Extent3d,
+}
 
 impl BevyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
@@ -18,7 +22,8 @@ impl BevyApp {
         println!("BevyApp created");
 
         // Create a channel to send messages from the Bevy app to the render app
-        let (app_to_render_sender, app_to_render_receiver) = async_channel::unbounded();
+        let (app_to_render_sender, _app_to_render_receiver) = async_channel::unbounded();
+        let (_render_to_app_sender, render_to_app_receiver) = async_channel::unbounded();
 
         // Add only essential plugins for rendering
         bevy_app
@@ -33,7 +38,7 @@ impl BevyApp {
                 bevy::render::pipelined_rendering::PipelinedRenderingPlugin,
                 RenderPlugin {
                     render_creation: RenderCreation::Automatic(WgpuSettings {
-                        backends: None,
+                        backends: Some(Backends::VULKAN),
                         power_preference: bevy::render::settings::PowerPreference::HighPerformance,
                         features: Default::default(),
                         limits: Default::default(),
@@ -42,18 +47,22 @@ impl BevyApp {
                     ..Default::default()
                 },
                 bevy::render::texture::ImagePlugin::default(),
+                bevy::pbr::PbrPlugin::default(),
                 CorePipelinePlugin::default(),
             ));
         println!("Plugins added");
+
         // Initialize render app channels
         bevy_app.insert_sub_app(
             RenderApp, 
             SubApp::new(),
         );
-        let render_app = bevy_app.sub_app_mut(RenderApp);
+        let render_app = bevy_app.sub_app_mut(RenderApp).add_systems(ExtractSchedule, extract_texture);
+        render_app.insert_resource(DrawFunctions::<Transmissive3d>::default());
         println!("Sub app created");
-        render_app.insert_resource(bevy::render::pipelined_rendering::RenderAppChannels::new(app_to_render_sender, app_to_render_receiver));
-        
+
+        render_app.insert_resource(bevy::render::pipelined_rendering::RenderAppChannels::new(app_to_render_sender, render_to_app_receiver));
+
         let render_target = {
             bevy_app.world_mut().insert_resource(Assets::<Image>::default());
             let mut images = bevy_app.world_mut().get_resource_mut::<Assets<Image>>().unwrap();
@@ -82,7 +91,10 @@ impl BevyApp {
             images.add(texture)
         };
 
+        bevy_app.insert_resource(RenderTargetResource(render_target.clone()));
+        
         bevy_app.add_systems(Startup, setup);
+
         println!("Systems added");
 
         Self { 
@@ -139,8 +151,9 @@ impl EframeApp for BevyApp {
                 // }
             } else {
                 println!("Invalid image data length: {}", image.data.len());
-
             }
+        } else {
+            println!("Image not found");
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -154,7 +167,10 @@ impl EframeApp for BevyApp {
 
 fn setup(
     mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut render_target: ResMut<RenderTargetResource>,
 ) {
     // Create a render target texture
     let size = Extent3d {
@@ -176,7 +192,7 @@ fn setup(
         ..default()
     };
     texture.resize(size);
-    let render_target = images.add(texture);
+    let render_target_texture = images.add(texture);
 
     // Spawn a light and the camera
     commands.spawn(PointLightBundle {
@@ -189,13 +205,28 @@ fn setup(
         ..default()
     });
 
+    // circular base
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Circle::new(4.0)),
+        material: materials.add(Color::WHITE),
+        transform: Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+        ..default()
+    });
+    // cube
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        material: materials.add(Color::srgb_u8(124, 144, 255)),
+        transform: Transform::from_xyz(0.0, 0.5, 0.0),
+        ..default()
+    });
+
     let translation = Vec3::new(0., -5.0, 5.);
 
     // Spawn a camera that renders to the render target
     commands.spawn((
         Camera3dBundle {
             camera: Camera {
-                target: bevy::render::camera::RenderTarget::Image(render_target.clone()),
+                target: bevy::render::camera::RenderTarget::Image(render_target_texture.clone()),
                 ..default()
             },
             transform: Transform::from_translation(translation),
@@ -203,8 +234,39 @@ fn setup(
         },
     ));
 
-    // Store the render target handle for future use
-    commands.insert_resource(RenderTargetResource(render_target));
+    // Check if RenderTargetResource is already inserted, if not insert it, otherwise update it
+    *render_target = RenderTargetResource(render_target_texture); // Modify the resource directly
+
+    println!("Setup done");
+}
+
+// System to extract the rendered image:
+#[derive(Bundle)]
+struct CameraBundle {
+    camera: Camera,
+    view_target: ViewTarget,
+}
+
+fn extract_texture(
+    mut commands: Commands,
+    images: Extract<Res<Assets<Image>>>,
+    render_target: Extract<Res<RenderTargetResource>>,
+) {
+    println!("Extracting texture");
+    if let Some(image) = images.get(&render_target.0) {
+        // Clone the texture data
+        let texture_data = image.data.clone();
+
+        // Create an Extent3d representing the texture size
+        let size = Extent3d {
+            width: image.texture_descriptor.size.width,
+            height: image.texture_descriptor.size.height,
+            depth_or_array_layers: 1,
+        };
+
+        // Insert the cloned texture data as a resource or send it to other systems
+        commands.insert_resource(ExtractedTextureData{data: texture_data, size});
+    }
 }
 
 fn main() {
