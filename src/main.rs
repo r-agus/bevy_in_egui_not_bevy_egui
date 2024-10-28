@@ -66,7 +66,7 @@ impl BevyApp {
                 ..default()
             };
 
-            texture.data = vec![0; (size.width * size.height * 4) as usize];
+            texture.data = vec![112; (size.width * size.height * 4) as usize]; // Just fill with a gray color
 
             images.add(texture)
         };
